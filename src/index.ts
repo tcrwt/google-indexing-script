@@ -144,6 +144,9 @@ export const index = async (
   console.log(``);
 
   for (const url of indexablePages) {
+    // wait 1 second between requests to avoid rate limiting
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
     console.log(`📄 Processing url: ${url}`);
     const status = await getPublishMetadata(accessToken, url);
     if (status === 404) {
