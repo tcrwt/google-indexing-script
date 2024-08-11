@@ -42,6 +42,15 @@ export async function fetchRetry(url: string, options: RequestInit, retries: num
       const body = await response.text();
       throw new Error(`Server error code ${response.status}\n${body}`);
     }
+
+    if (response.status === 429) {
+      console.log("Rate limited. Retrying in 5 seconds...");
+      // Retry after 5 seconds if rate limited
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      // Retry the request ignoring the retries limit
+      return fetchRetry(url, options, retries);
+    }
     return response;
   } catch (err) {
     if (retries <= 0) {

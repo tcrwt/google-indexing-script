@@ -169,7 +169,7 @@ export const index = async (input: string = process.argv[2], options: IndexOptio
 
   for (const url of indexablePages) {
     // wait 1 second between requests to avoid rate limiting
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // await new Promise((resolve) => setTimeout(resolve, 1000));
 
     console.log(`📄 Processing url: ${url}`);
     const status = await getPublishMetadata(accessToken, url, {
