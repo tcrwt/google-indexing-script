@@ -7,19 +7,30 @@ import {
   getPageIndexingStatus,
   convertToFilePath,
   checkSiteUrl,
+  checkCustomUrls,
 } from "./shared/gsc";
 import { getSitemapPages } from "./shared/sitemap";
 import { Status } from "./shared/types";
-import { batch, parseCommandLineArgs } from "./shared/utils";
+import { batch } from "./shared/utils";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import path from "path";
 
 const CACHE_TIMEOUT = 1000 * 60 * 60 * 24 * 14; // 14 days
+export const QUOTA = {
+  rpm: {
+    retries: 3,
+    waitingTime: 60000, // 1 minute
+  },
+};
 
 export type IndexOptions = {
   client_email?: string;
   private_key?: string;
   path?: string;
+  urls?: string[];
+  quota?: {
+    rpmRetry?: boolean; // read requests per minute: retry after waiting time
+  };
 };
 
 /**
@@ -27,25 +38,29 @@ export type IndexOptions = {
  * @param input - The domain or site URL to index.
  * @param options - (Optional) Additional options for indexing.
  */
-export const index = async (
-  input: string = process.argv[2],
-  options: IndexOptions = {},
-) => {
+export const index = async (input: string = process.argv[2], options: IndexOptions = {}) => {
   if (!input) {
     console.error("❌ Please provide a domain or site URL as the first argument.");
     console.error("");
     process.exit(1);
   }
 
-  const args = parseCommandLineArgs(process.argv.slice(2));
   if (!options.client_email) {
-    options.client_email = args["client-email"] || process.env.GIS_CLIENT_EMAIL;
+    options.client_email = process.env.GIS_CLIENT_EMAIL;
   }
   if (!options.private_key) {
-    options.private_key = args["private-key"] || process.env.GIS_PRIVATE_KEY;
+    options.private_key = process.env.GIS_PRIVATE_KEY;
   }
   if (!options.path) {
-    options.path = args["path"] || process.env.GIS_PATH;
+    options.path = process.env.GIS_PATH;
+  }
+  if (!options.urls) {
+    options.urls = process.env.GIS_URLS ? process.env.GIS_URLS.split(",") : undefined;
+  }
+  if (!options.quota) {
+    options.quota = {
+      rpmRetry: process.env.GIS_QUOTA_RPM_RETRY === "true",
+    };
   }
 
   const accessToken = await getAccessToken(options.client_email, options.private_key, options.path);
@@ -61,15 +76,24 @@ export const index = async (
 
   siteUrl = await checkSiteUrl(accessToken, siteUrl);
 
-  const [sitemaps, pages] = await getSitemapPages(accessToken, siteUrl);
+  let pages = options.urls || [];
+  if (pages.length === 0) {
+    console.log(`🔎 Fetching sitemaps and pages...`);
+    const [sitemaps, pagesFromSitemaps] = await getSitemapPages(accessToken, siteUrl);
 
-  if (sitemaps.length === 0) {
-    console.error("❌ No sitemaps found, add them to Google Search Console and try again.");
-    console.error("");
-    process.exit(1);
+    if (sitemaps.length === 0) {
+      console.error("❌ No sitemaps found, add them to Google Search Console and try again.");
+      console.error("");
+      process.exit(1);
+    }
+
+    pages = pagesFromSitemaps;
+
+    console.log(`👉 Found ${pages.length} URLs in ${sitemaps.length} sitemap`);
+  } else {
+    pages = checkCustomUrls(siteUrl, pages);
+    console.log(`👉 Found ${pages.length} URLs in the provided list`);
   }
-
-  console.log(`👉 Found ${pages.length} URLs in ${sitemaps.length} sitemap`);
 
   const statusPerUrl: Record<string, { status: Status; lastCheckedAt: string }> = existsSync(cachePath)
     ? JSON.parse(readFileSync(cachePath, "utf8"))
@@ -98,7 +122,7 @@ export const index = async (
   const shouldRecheck = (status: Status, lastCheckedAt: string) => {
     const shouldIndexIt = indexableStatuses.includes(status);
     const isOld = new Date(lastCheckedAt) < new Date(Date.now() - CACHE_TIMEOUT);
-    return shouldIndexIt || isOld;
+    return shouldIndexIt && isOld;
   };
 
   await batch(
@@ -148,7 +172,9 @@ export const index = async (
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
     console.log(`📄 Processing url: ${url}`);
-    const status = await getPublishMetadata(accessToken, url);
+    const status = await getPublishMetadata(accessToken, url, {
+      retriesOnRateLimit: options.quota.rpmRetry ? QUOTA.rpm.retries : 0,
+    });
     if (status === 404) {
       await requestIndexing(accessToken, url);
       console.log("🚀 Indexing requested successfully. It may take a few days for Google to process it.");
